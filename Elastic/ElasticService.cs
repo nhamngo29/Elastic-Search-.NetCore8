@@ -2,6 +2,7 @@
 using Elasticsearch.Net;
 using Nest;
 using System.ComponentModel;
+using System.Linq.Expressions;
 
 namespace Elastic
 {
@@ -88,7 +89,45 @@ namespace Elastic
             var response = await _elasticClient.GetAsync<T>(new GetRequest(Indices.Index(_indexName), id));
             return response.Source;
         }
+        public async Task<(long Count, IEnumerable<T> Documents)> GetDocumentsAsyncPrefix(GridQueryModel gridQueryModel,params Expression<Func<T, object>>[] fields)
+        {
+            int frm = (gridQueryModel.Page - 1) * gridQueryModel.Limit;
+            var searchRequest = new SearchRequest(Indices.Index(_indexName)) { From = 0, Size = 0 };
 
+            long count;
+            if (!string.IsNullOrEmpty(gridQueryModel.Search))
+            {
+                var fieldNames = fields.Select(field => field.Body.ToString().Split('.').Last());
+                searchRequest.Query = new MultiMatchQuery
+                {
+                    Query = gridQueryModel.Search,
+                    Type = TextQueryType.PhrasePrefix,
+                    Fields = fieldNames.Select(name => (Field)name).ToArray()
+                };
+                searchRequest.QueryOnQueryString = $"({gridQueryModel.Search}) OR (*{gridQueryModel.Search}*)";
+                count = await GetFilterDocumentsCount(searchRequest);
+            }
+            else
+                count = await GetDocumentsCount();
+
+            searchRequest.From = frm; searchRequest.Size = gridQueryModel.Limit;
+
+            if (!string.IsNullOrEmpty(gridQueryModel.SortBy) && !string.IsNullOrEmpty(gridQueryModel.Direction))
+            {
+                var field = new Field(gridQueryModel.SortBy);
+
+                searchRequest.Sort = new List<ISort> {
+                 new FieldSort {
+                     Field = field,
+                     Order = "asc".Equals(gridQueryModel.Direction, StringComparison.InvariantCultureIgnoreCase) ? SortOrder.Ascending : SortOrder.Descending
+                 }
+                };
+            }
+
+            var searchResponse = await _elasticClient.SearchAsync<T>(searchRequest);
+
+            return new EsDocuments<T>(count, searchResponse.Documents);
+        }
         public async Task<(long Count, IEnumerable<T> Documents)> GetDocumentsAsync(GridQueryModel gridQueryModel)
         {
             int frm = (gridQueryModel.Page - 1) * gridQueryModel.Limit;
